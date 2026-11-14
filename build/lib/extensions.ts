@@ -567,6 +567,10 @@ export function packageCopilotExtensionStream(): Stream {
 	const toSrc = (deps: string[]) => deps.map(d => path.relative(root, d)).map(d => [`${d}/**`, `!${d}/**/{test,tests}/**`]).flat();
 	const dependenciesSrc = toSrc(productionDependencies.filter(d => !isCopilotCli(d)));
 	const copilotCliSrc = toSrc(productionDependencies.filter(isCopilotCli));
+	if (copilotCliSrc.length && process.platform === 'win32') {
+		// MX1: drop natives for other operating systems from the Windows build.
+		copilotCliSrc.push('!**/*{darwin,linux,musl,android,freebsd}*.node', '!**/*{darwin,linux,musl,android,freebsd}*/**');
+	}
 
 	return es.merge(
 		localExtensionsStream,

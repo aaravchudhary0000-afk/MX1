@@ -522,7 +522,21 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
 			glob('**/*explorer_command*.dll', { cwd }),
 			// TODO@anthonykim1 Remove once @github/copilot ships OneAuthInterop.dll with complete version information.
 			glob('**/OneAuthInterop.dll', { cwd }),
-		])).flatMap(o => o);
+		])).flatMap(o => o).filter(dep => {
+			// MX1: the built-in Copilot CLI ships natives for other OSes; only patch Windows PE files.
+			if (/(^|[\\/._-])(darwin|linux|linuxmusl|musl|android|freebsd|macos)([\\/._-]|$)/i.test(dep)) {
+				return false;
+			}
+			try {
+				const fd = fs.openSync(path.join(cwd, dep), 'r');
+				const buf = Buffer.alloc(2);
+				fs.readSync(fd, buf, 0, 2, 0);
+				fs.closeSync(fd);
+				return buf[0] === 0x4d && buf[1] === 0x5a;
+			} catch {
+				return false;
+			}
+		});
 		const packageJson = JSON.parse(await fs.promises.readFile(path.join(cwd, versionedResourcesFolder, 'resources', 'app', 'package.json'), 'utf8'));
 		const product = JSON.parse(await fs.promises.readFile(path.join(cwd, versionedResourcesFolder, 'resources', 'app', 'product.json'), 'utf8'));
 		const baseVersion = packageJson.version.replace(/-.*$/, '');

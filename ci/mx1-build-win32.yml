@@ -1,0 +1,141 @@
+name: MX1 Windows x64 build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish the GitHub Release "MX1 v1.0" (tag v1.0)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mx1-win32
+  cancel-in-progress: true
+
+env:
+  NPM_ARCH: x64
+  VSCODE_ARCH: x64
+  npm_config_arch: x64
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+  FOUNDRY_LOCAL_SKIP_INSTALL: '1'
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    name: Build MX1 (win32-x64)
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Enable long paths
+        shell: pwsh
+        run: git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup pnpm (packageManager)
+        uses: pnpm/action-setup@v4
+
+      - name: Add Windows SDK tools (signtool) to PATH
+        shell: pwsh
+        run: |
+          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          if (-not $st) { throw "signtool.exe not found" }
+          Write-Host "Using $($st.FullName)"
+          Add-Content $env:GITHUB_PATH $st.DirectoryName
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          exec { pnpm run preinstall }
+          for ($i = 1; $i -le 3; $i++) {
+            try { exec { pnpm install --frozen-lockfile }; break }
+            catch { if ($i -eq 3) { throw }; Write-Host "pnpm install failed (attempt $i), retrying..."; Start-Sleep -Seconds 10 }
+          }
+
+      - name: Download built-in extensions
+        run: node build/lib/builtInExtensions.ts
+
+      - name: Prepare Electron types
+        run: node build/npm/electronTypes.ts
+
+      - name: Compile and package MX1 (vscode-win32-x64-min)
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          exec { pnpm run gulp vscode-win32-x64-min }
+          exec { pnpm run gulp vscode-win32-x64-inno-updater }
+
+      - name: Verify package
+        shell: pwsh
+        run: |
+          $app = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) 'VSCode-win32-x64'
+          Get-ChildItem $app | Format-Table Name, Length
+          $exe = Join-Path $app 'MX1.exe'
+          if (-not (Test-Path $exe)) { throw "MX1.exe missing" }
+          (Get-Item $exe).VersionInfo | Format-List ProductName, FileDescription, CompanyName, FileVersion, ProductVersion, LegalCopyright
+          $pty = Get-ChildItem -Recurse $app -Filter conpty.node -ErrorAction SilentlyContinue
+          Write-Host "node-pty conpty binaries: $($pty.Count)"
+          Get-ChildItem -Recurse $app -Include pty.node,conpty.node,conpty_console_list.node,OpenConsole.exe,conpty.dll -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+
+      - name: Build user installer (Inno Setup)
+        id: setup
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          exec { pnpm run gulp vscode-win32-x64-user-setup }
+
+      - name: Collect release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $app = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) 'VSCode-win32-x64'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          7z a -tzip -mx=7 "dist\MX1-win32-x64.zip" "$app\*" | Out-Null
+          $setup = Get-ChildItem ".build\win32-x64\user-setup" -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($setup) { Copy-Item $setup.FullName "dist\MX1UserSetup-x64-1.0.exe" }
+          Get-ChildItem dist | ForEach-Object { "{0}  {1}  {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName -Algorithm SHA256).Hash } | Tee-Object dist\SHA256SUMS.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MX1-win32-x64
+          path: dist/*
+          retention-days: 30
+
+      - name: Publish GitHub Release "MX1 v1.0"
+        if: ${{ github.event_name == 'push' || inputs.release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          gh release view v1.0 *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload v1.0 (Get-ChildItem dist).FullName --clobber
+          } else {
+            $notes = "MX1 v1.0 for Windows 10 and 11 (x64). Based on Code - OSS 1.146.0 (MIT). Extensions from Open VSX.`n`n- MX1-win32-x64.zip: portable, unzip and run MX1.exe`n- MX1UserSetup-x64-1.0.exe: per-user installer (if present)`n- SHA256SUMS.txt: checksums"
+            gh release create v1.0 (Get-ChildItem dist).FullName --title "MX1 v1.0" --notes $notes --target $env:GITHUB_SHA
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }

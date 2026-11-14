@@ -560,13 +560,20 @@ export function packageCopilotExtensionStream(): Stream {
 	);
 
 	const productionDependencies = getProductionDependencies('extensions/copilot');
-	const dependenciesSrc = productionDependencies.map(d => path.relative(root, d)).map(d => [`${d}/**`, `!${d}/**/{test,tests}/**`]).flat();
+	// MX1: build/.moduleignore strips `@github/copilot/**` for the app root, but the
+	// built-in copilot extension needs its own @github/copilot (incl. sdk/) at runtime
+	// and prepareBuiltInCopilotRipgrepShim requires it. Package it unfiltered.
+	const isCopilotCli = (d: string) => /[\\/]node_modules[\\/]@github[\\/]copilot$/.test(d);
+	const toSrc = (deps: string[]) => deps.map(d => path.relative(root, d)).map(d => [`${d}/**`, `!${d}/**/{test,tests}/**`]).flat();
+	const dependenciesSrc = toSrc(productionDependencies.filter(d => !isCopilotCli(d)));
+	const copilotCliSrc = toSrc(productionDependencies.filter(isCopilotCli));
 
 	return es.merge(
 		localExtensionsStream,
 		gulp.src(dependenciesSrc, { base: '.' })
 			.pipe(util2.cleanNodeModules(path.join(root, 'build', '.moduleignore')))
-			.pipe(util2.cleanNodeModules(path.join(root, 'build', `.moduleignore.${process.platform}`)))
+			.pipe(util2.cleanNodeModules(path.join(root, 'build', `.moduleignore.${process.platform}`))),
+		...(copilotCliSrc.length ? [gulp.src(copilotCliSrc, { base: '.', dot: true })] : [])
 	).pipe(util2.setExecutableBit(['**/*.sh']));
 }
 

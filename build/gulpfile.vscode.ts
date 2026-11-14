@@ -564,7 +564,12 @@ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinati
 		const appNodeModulesDir = path.join(appBase, 'node_modules.asar.unpacked');
 
 		const builtInCopilotExtensionDir = path.join(appBase, 'extensions', 'copilot');
-		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
+		try {
+			prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
+		} catch (err) {
+			// MX1: the built-in Copilot extension is optional; never fail the product build on it.
+			console.warn(`[MX1] Skipping built-in Copilot SDK shim: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	};
 }
 
